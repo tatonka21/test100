@@ -6,12 +6,24 @@ import httpx
 import os
 import logging
 from datetime import datetime
+import sys
+sys.path.append('/workspaces/test100')
+
+from src.shared.metrics import (
+    MetricsMiddleware, setup_service_metrics, metrics_endpoint,
+    MetricsCollector
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Agent Platform - API Gateway")
+
+# Setup metrics
+setup_service_metrics("api-gateway", "1.0.0")
+app.add_middleware(MetricsMiddleware, service_name="api-gateway")
+metrics_collector = MetricsCollector("api-gateway")
 
 # Add CORS middleware
 app.add_middleware(
@@ -230,3 +242,9 @@ async def log_requests(request: Request, call_next):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8080)
+
+# Metrics endpoint
+@app.get("/metrics")
+async def get_metrics():
+    """Prometheus metrics endpoint."""
+    return await metrics_endpoint()

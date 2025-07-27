@@ -2,9 +2,15 @@ import asyncio
 import json
 import logging
 import uuid
+import sys
+sys.path.append('/workspaces/test100')
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
+
+from src.shared.database import (
+    db_manager, AgentRepository, AgentStateRepository, TaskRepository
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -28,8 +34,77 @@ class BaseAgent(ABC):
         self.task_queue = asyncio.Queue()
         self.running = False
         
+        # Database repositories
+        self._agent_repo = None
+        self._state_repo = None
+        self._task_repo = None
+        
         # Initialize agent-specific state
         self._initialize_state()
+    
+    async def _init_repositories(self):
+        """Initialize database repositories."""
+        if not self._agent_repo:
+            session = db_manager.get_session()
+            self._agent_repo = AgentRepository(session)
+            self._state_repo = AgentStateRepository(session)
+            self._task_repo = TaskRepository(session)
+    
+    async def load_state_from_db(self):
+        """Load agent state from database."""
+        try:
+            await self._init_repositories()
+            state_data = await self._state_repo.get_by_agent_id(self.agent_id)
+            
+            if state_data:
+                self.state.update(state_data.state_data or {})
+                # Update other state components
+                if hasattr(self, 'memory'):
+                    self.memory = state_data.memory or []
+                if hasattr(self, 'goals'):
+                    self.goals = state_data.goals or []
+                if hasattr(self, 'constraints'):
+                    self.constraints = state_data.constraints or []
+                if hasattr(self, 'project_context'):
+                    self.project_context = state_data.project_context or {}
+                    
+                logger.info(f"Loaded state for agent {self.agent_id}")
+            else:
+                logger.info(f"No existing state found for agent {self.agent_id}")
+                
+        except Exception as e:
+            logger.error(f"Failed to load state for agent {self.agent_id}: {e}")
+    
+    async def save_state_to_db(self):
+        """Save agent state to database."""
+        try:
+            await self._init_repositories()
+            
+            state_data = {
+                "state_data": self.state,
+                "memory": getattr(self, 'memory', []),
+                "goals": getattr(self, 'goals', []),
+                "constraints": getattr(self, 'constraints', []),
+                "project_context": getattr(self, 'project_context', {})
+            }
+            
+            await self._state_repo.create_or_update(self.agent_id, state_data)
+            logger.debug(f"Saved state for agent {self.agent_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save state for agent {self.agent_id}: {e}")
+    
+    async def update_status_in_db(self, status: str):
+        """Update agent status in database."""
+        try:
+            await self._init_repositories()
+            await self._agent_repo.update(self.agent_id, {"status": status})
+            self.status = status
+            self.updated_at = datetime.utcnow()
+            logger.debug(f"Updated status for agent {self.agent_id} to {status}")
+            
+        except Exception as e:
+            logger.error(f"Failed to update status for agent {self.agent_id}: {e}")
     
     def _initialize_state(self):
         """Initialize agent-specific state."""
@@ -47,14 +122,22 @@ class BaseAgent(ABC):
             logger.warning(f"Agent {self.agent_id} is already running")
             return
         
-        self.running = True
-        self.status = "running"
-        self.updated_at = datetime.utcnow()
-        
-        logger.info(f"Agent {self.agent_id} ({self.name}) started")
-        
-        # Start the main processing loop
-        asyncio.create_task(self._processing_loop())
+        try:
+            # Load state from database
+            await self.load_state_from_db()
+            
+            self.running = True
+            await self.update_status_in_db("running")
+            
+            logger.info(f"Agent {self.agent_id} ({self.name}) started")
+            
+            # Start the main processing loop
+            asyncio.create_task(self._processing_loop())
+            
+        except Exception as e:
+            logger.error(f"Failed to start agent {self.agent_id}: {e}")
+            await self.update_status_in_db("error")
+            raise
     
     async def stop(self):
         """Stop the agent's processing loop."""
@@ -62,21 +145,35 @@ class BaseAgent(ABC):
             logger.warning(f"Agent {self.agent_id} is not running")
             return
         
-        self.running = False
-        self.status = "stopped"
-        self.updated_at = datetime.utcnow()
-        
-        logger.info(f"Agent {self.agent_id} ({self.name}) stopped")
+        try:
+            self.running = False
+            
+            # Save final state to database
+            await self.save_state_to_db()
+            await self.update_status_in_db("stopped")
+            
+            logger.info(f"Agent {self.agent_id} ({self.name}) stopped")
+            
+        except Exception as e:
+            logger.error(f"Error stopping agent {self.agent_id}: {e}")
+            await self.update_status_in_db("error")
     
     async def _processing_loop(self):
         """Main processing loop for the agent."""
+        last_state_save = datetime.utcnow()
+        state_save_interval = 30  # Save state every 30 seconds
+        
         while self.running:
             try:
                 # Get the next task from the queue with a timeout
                 try:
                     task = await asyncio.wait_for(self.task_queue.get(), timeout=1.0)
                 except asyncio.TimeoutError:
-                    # No task available, continue the loop
+                    # No task available, check if we need to save state
+                    now = datetime.utcnow()
+                    if (now - last_state_save).total_seconds() > state_save_interval:
+                        await self.save_state_to_db()
+                        last_state_save = now
                     continue
                 
                 task_id, task_type, parameters = task
@@ -88,8 +185,9 @@ class BaseAgent(ABC):
                     result = await self.process_task(task_id, task_type, parameters)
                     logger.info(f"Agent {self.agent_id} completed task {task_id}")
                     
-                    # Here we would typically publish a task completion event
-                    # This would be implemented by the specific agent runtime
+                    # Save state after processing task
+                    await self.save_state_to_db()
+                    last_state_save = datetime.utcnow()
                     
                 except Exception as e:
                     logger.error(f"Agent {self.agent_id} failed to process task {task_id}: {e}")

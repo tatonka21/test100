@@ -1,10 +1,13 @@
 FROM python:3.10-slim
 
-WORKDIR /app
+WORKDIR /workspaces/test100
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY ./src/agent_manager/requirements.txt ./src/agent_manager/
+RUN pip install --no-cache-dir -r ./src/agent_manager/requirements.txt
 
-COPY app.py .
+COPY ./src/shared ./src/shared
+COPY ./src/agent_manager/app.py ./src/agent_manager/
+
+WORKDIR /workspaces/test100/src/agent_manager
 
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

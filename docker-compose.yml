@@ -78,6 +78,86 @@ services:
       timeout: 10s
       retries: 5
 
+  # Frontend web application
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - api-gateway
+    environment:
+      - REACT_APP_API_URL=http://localhost:8080
+    networks:
+      - agent-network
+
+  # Application services
+  api-gateway:
+    build:
+      context: .
+      dockerfile: ./src/api_gateway/Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      - agent-manager
+      - agent-runtime
+    environment:
+      - AGENT_MANAGER_URL=http://agent-manager:8000
+      - AGENT_RUNTIME_URL=http://agent-runtime:8001
+    networks:
+      - agent-network
+
+  agent-manager:
+    build:
+      context: .
+      dockerfile: ./src/agent_manager/Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - rabbitmq
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=agent_platform
+      - POSTGRES_PASSWORD=agent_platform_password
+      - POSTGRES_DB=agent_platform
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_USER=agent_platform
+      - RABBITMQ_PASS=agent_platform_password
+    networks:
+      - agent-network
+      - default
+
+  agent-runtime:
+    build:
+      context: .
+      dockerfile: ./src/agent_runtime/Dockerfile
+    ports:
+      - "8001:8001"
+    depends_on:
+      - postgres
+      - rabbitmq
+      - redis
+      - qdrant
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=agent_platform
+      - POSTGRES_PASSWORD=agent_platform_password
+      - POSTGRES_DB=agent_platform
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_USER=agent_platform
+      - RABBITMQ_PASS=agent_platform_password
+      - REDIS_HOST=redis
+      - QDRANT_HOST=qdrant
+    networks:
+      - agent-network
+      - default
+
+networks:
+  agent-network:
+    driver: bridge
+
 volumes:
   rabbitmq_data:
   qdrant_data:
